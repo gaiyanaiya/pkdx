@@ -1,0 +1,67 @@
+{
+  "version": "scarlet_violet",
+  "pokemon": {
+    "name": "ゲッコウガ",
+    "name_en": "Greninja",
+    "globalNo": "0658",
+    "type1": "みず",
+    "type2": "あく",
+    "base_stats": {
+      "hp": 72,
+      "atk": 95,
+      "def": 67,
+      "spa": 103,
+      "spd": 71,
+      "spe": 122
+    },
+    "abilities": {
+      "ability1": "げきりゅう",
+      "ability2": "",
+      "dream_ability": "へんげんじざい"
+    }
+  },
+  "build": {
+    "nature": "ようき",
+    "nature_up": "すばやさ",
+    "nature_down": "とくこう",
+    "ability": "へんげんじざい",
+    "item": "",
+    "moves": [
+      {
+        "name": "いわなだれ",
+        "type": "いわ",
+        "category": "ぶつり",
+        "power": 75,
+        "accuracy": 90
+      }
+    ],
+    "evs": {
+      "hp": 0,
+      "atk": 28,
+      "def": 0,
+      "spa": 0,
+      "spd": 0,
+      "spe": 0
+    },
+    "actual_stats": {
+      "hp": 147,
+      "atk": 119,
+      "def": 87,
+      "spa": 110,
+      "spd": 91,
+      "spe": 156
+    }
+  },
+  "damage_calcs": [
+    {
+      "direction": "attack",
+      "opponent": "メガリザードンY（H4振り）",
+      "move": "いわなだれ",
+      "note": "ダブルバトル全体技補正(×0.75)、STAB(×1.5)、タイプ相性(×4.0)込み",
+      "damages": [156, 156, 156, 160, 160, 160, 168, 168, 168, 172, 172, 172, 180, 180, 180, 184],
+      "percents": [1.013, 1.013, 1.013, 1.039, 1.039, 1.039, 1.091, 1.091, 1.091, 1.117, 1.117, 1.117, 1.169, 1.169, 1.169, 1.195],
+      "ko": "確定1発（16/16）"
+    }
+  ],
+  "updated_at": "2026-04-06"
+}
