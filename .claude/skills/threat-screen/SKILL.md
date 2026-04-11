@@ -362,7 +362,7 @@ POKEDEX_DB=$REPO_ROOT/pokedex/pokedex.db $PKDX stat-calc "<ポケモン名>" \
 ### ★★ 弱点技持ち（後手・耐性なし）/ <STAB>等倍STAB技持ち＋先手
 - **<ポケモン名>** — <理由>
 
-### ★ <STAB>技耐性持ち（サイクルで詰められる）
+### ★ <STAB>技耐性持ち
 - **<ポケモン名>** — <理由>
 
 ---
