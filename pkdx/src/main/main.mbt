@@ -116,7 +116,7 @@ fn ctx_game(ctx : @admiral.Context) -> GameContext {
 fn build_cli() -> @admiral.CliApp {
   @admiral.cli(
     name="pkdx",
-    version="0.2.5",
+    version=pkdx_version,
     description="Pokedex CLI tool",
     commands=[
       cmd_query(),
@@ -130,6 +130,7 @@ fn build_cli() -> @admiral.CliApp {
       cmd_stat_reverse(),
       cmd_init_cache(),
       cmd_hbd(),
+      cmd_learners(),
     ],
   )
 }
@@ -202,17 +203,17 @@ fn cmd_type_chart() -> @admiral.CommandDef {
     name="type-chart",
     description="Show type effectiveness multiplier",
     positionals=[
-      @admiral.positional("move_type", description="Attacking move type", required=true),
-      @admiral.positional("def_type1", description="Defender primary type", required=true),
-      @admiral.positional("def_type2", description="Defender secondary type", required=false),
+      @admiral.positional(
+        "move_type", description="Attacking move type", required=true,
+      ),
+      @admiral.positional(
+        "def_types",
+        description="Defender type(s), comma-separated for dual type (e.g. 'ひこう,はがね')",
+        required=true,
+      ),
     ],
     run=Some(fn(ctx) {
-      run_type_chart(
-        ctx_str(ctx, "move_type"),
-        ctx_str(ctx, "def_type1"),
-        // def_type2 is optional (required=false); ctx_str_opt returns "" when absent
-        ctx_str_opt(ctx, "def_type2"),
-      )
+      run_type_chart(ctx_str(ctx, "move_type"), ctx_str(ctx, "def_types"))
     }),
   )
 }
@@ -252,9 +253,13 @@ fn cmd_damage() -> @admiral.CommandDef {
       @admiral.string("field", description="Terrain (ja): エレキ|グラス|ミスト|サイコ", default=Some("")),
       @admiral.string("tera-type", description="Tera type (ja)", default=Some("")),
       @admiral.bool("critical", description="Treat the hit as a critical"),
+      @admiral.bool("double", description="Double battle (applies 0.75x to spread moves)"),
       @admiral.int("atk-stat", description="Override attacker attack/special stat", default=Some(0)),
       @admiral.int("def-stat", description="Override defender defense/special stat", default=Some(0)),
       @admiral.int("def-hp", description="Override defender HP", default=Some(0)),
+      @admiral.int("atk-rank", description="Attacker stat stage (-6..+6). For Body Press this is the Defense stage", default=Some(0)),
+      @admiral.int("def-rank", description="Defender stat stage (-6..+6)", default=Some(0)),
+      @admiral.int("fainted-count", description="Number of fainted allies (0-5, for Supreme Overlord/そうだいしょう)", default=Some(2)),
     ],
     positionals=[
       @admiral.positional("attacker", description="Attacker Pokemon name", required=true),
@@ -281,9 +286,13 @@ fn cmd_damage() -> @admiral.CommandDef {
         field,
         ctx_str(ctx, "tera-type"),
         ctx.get_bool("critical"),
+        ctx.get_bool("double"),
         ctx_int(ctx, "atk-stat"),
         ctx_int(ctx, "def-stat"),
         ctx_int(ctx, "def-hp"),
+        ctx_int(ctx, "atk-rank"),
+        ctx_int(ctx, "def-rank"),
+        ctx_int(ctx, "fainted-count"),
       )
     }),
   )
@@ -325,10 +334,10 @@ fn cmd_write() -> @admiral.CommandDef {
 fn cmd_stat_calc() -> @admiral.CommandDef {
   @admiral.command(
     name="stat-calc",
-    description="Compute Lv50 stats from base + EV/IV + nature",
+    description="Compute Lv50 stats from base + SP + nature (EV/IV for deprecated versions)",
     options=[
-      @admiral.string("ev", description="EVs as 'H,A,B,C,D,S'", default=Some("")),
-      @admiral.string("iv", description="IVs as 'H,A,B,C,D,S' or single value", default=Some("")),
+      @admiral.string("ev", description="SPs as 'H,A,B,C,D,S' (EVs for deprecated versions)", default=Some("")),
+      @admiral.string("iv", description="IVs (deprecated versions only, ignored in Champions)", default=Some("")),
       @admiral.string("nature", description="Nature name (ja)", default=Some("")),
       @admiral.string("nature-up", description="Stat that nature boosts", default=Some("")),
       @admiral.string("nature-down", description="Stat that nature lowers", default=Some("")),
@@ -358,11 +367,11 @@ fn cmd_stat_calc() -> @admiral.CommandDef {
 fn cmd_stat_reverse() -> @admiral.CommandDef {
   @admiral.command(
     name="stat-reverse",
-    description="Reverse-derive base stat (single mode) or EV spread (pokemon mode)",
+    description="Reverse-derive base stat (single mode) or SP/EV spread (pokemon mode)",
     options=[
       @admiral.string("stats", description="Actual stats 'H,A,B,C,D,S' (pokemon mode)", default=Some("")),
-      @admiral.int("iv", description="IV", default=Some(31)),
-      @admiral.int("ev", description="EV", default=Some(0)),
+      @admiral.int("iv", description="IV (deprecated versions only, ignored in Champions)", default=Some(31)),
+      @admiral.int("ev", description="SP or EV (deprecated versions)", default=Some(0)),
       @admiral.string("nature", description="Nature mod: up|down|neutral", default=Some("neutral")),
       @admiral.bool("hp", description="Treat target as HP stat (single mode)"),
       version_option(),
@@ -413,10 +422,10 @@ fn cmd_init_cache() -> @admiral.CommandDef {
 fn cmd_hbd() -> @admiral.CommandDef {
   @admiral.command(
     name="hbd",
-    description="Optimize H/B/D EV spread under HBD/(p*B+s*D) objective",
+    description="Optimize H/B/D SP spread under HBD/(p*B+s*D) objective (EV for deprecated versions)",
     options=[
-      @admiral.string("fixed-ev", description="Fixed EVs 'H,A,B,C,D,S' (_ to optimize)", default=Some("")),
-      @admiral.string("iv", description="IVs as 'H,A,B,C,D,S' or single value", default=Some("")),
+      @admiral.string("fixed-ev", description="Fixed SPs 'H,A,B,C,D,S' (_ to optimize) (EVs for deprecated versions)", default=Some("")),
+      @admiral.string("iv", description="IVs (deprecated versions only, ignored in Champions)", default=Some("")),
       @admiral.string("nature", description="Nature name (ja)", default=Some("")),
       @admiral.string("nature-up", description="Stat that nature boosts", default=Some("")),
       @admiral.string("nature-down", description="Stat that nature lowers", default=Some("")),
@@ -553,6 +562,62 @@ fn run_search(
 }
 
 ///|
+fn cmd_learners() -> @admiral.CommandDef {
+  @admiral.command(
+    name="learners",
+    description="List Pokemon that can learn a given move",
+    options=[
+      version_option(),
+      regulation_option(),
+      format_option(),
+      @admiral.int("limit", description="Max results (default 50)", default=Some(50)),
+    ],
+    positionals=[
+      @admiral.positional(
+        "move",
+        description="Move name (ja)",
+        required=true,
+      ),
+    ],
+    run=Some(fn(ctx) {
+      run_learners(
+        ctx_str(ctx, "move"),
+        ctx_int(ctx, "limit"),
+        ctx_game(ctx),
+        ctx_format(ctx),
+      )
+    }),
+  )
+}
+
+///|
+fn run_learners(
+  move_name : String,
+  limit : Int,
+  game : GameContext,
+  format : @cli.OutputFormat,
+) -> Unit {
+  with_db(fn(db) {
+    match @db.query_learners(db, move_name, game.version) {
+      Ok(results) => {
+        let filtered = if game.regulation != "" {
+          results.filter(fn(p) { @db.is_available(p.global_no, game.regulation) })
+        } else {
+          results
+        }
+        let limited = if limit > 0 && filtered.length() > limit {
+          filtered[:limit].to_array()
+        } else {
+          filtered
+        }
+        println(@cli.format_search(limited, format))
+      }
+      Err(e) => println("Error: " + e)
+    }
+  })
+}
+
+///|
 fn run_damage(
   attacker_name : String,
   defender_name : String,
@@ -567,10 +632,22 @@ fn run_damage(
   field : @model.Field,
   tera_type : String,
   critical : Bool,
+  is_double : Bool,
   atk_stat : Int,
   def_stat : Int,
   def_hp : Int,
+  atk_rank : Int,
+  def_rank : Int,
+  fainted_count : Int,
 ) -> Unit {
+  if atk_rank < -6 || atk_rank > 6 {
+    println("Error: --atk-rank must be in [-6, 6]")
+    return
+  }
+  if def_rank < -6 || def_rank > 6 {
+    println("Error: --def-rank must be in [-6, 6]")
+    return
+  }
   with_db(fn(db) {
     let atk_pokemon = match @db.query_pokemon(db, attacker_name, game.version) {
       Ok(p) => p
@@ -608,6 +685,15 @@ fn run_damage(
       atk_stat_override: atk_stat,
       def_stat_override: def_stat,
       def_hp_override: def_hp,
+      atk_rank,
+      def_rank,
+      fainted_count,
+      is_double,
+      stat_system: if game.version == "champions" {
+        @model.Champions
+      } else {
+        @model.Standard
+      },
     }
     let result = @damage.calc_damage(input)
     println(@cli.format_damage(result, input, format))
@@ -615,11 +701,7 @@ fn run_damage(
 }
 
 ///|
-fn run_type_chart(
-  move_type : String,
-  def_type1 : String,
-  def_type2 : String,
-) -> Unit {
+fn run_type_chart(move_type : String, def_types_csv : String) -> Unit {
   let atk = match @types.type_from_jp(move_type) {
     Some(t) => t
     None => {
@@ -627,18 +709,23 @@ fn run_type_chart(
       return
     }
   }
-  let d1 = match @types.type_from_jp(def_type1) {
+  let parts = @cli.split_csv(def_types_csv)
+  if parts.length() == 0 || parts.length() > 2 {
+    println("Error: Specify 1 or 2 defender types (comma-separated), got " + parts.length().to_string())
+    return
+  }
+  let d1 = match @types.type_from_jp(parts[0]) {
     Some(t) => t
     None => {
-      println("Error: Unknown type: " + def_type1)
+      println("Error: Unknown type: " + parts[0])
       return
     }
   }
-  let d2 : @types.PokemonType? = if def_type2.length() > 0 {
-    match @types.type_from_jp(def_type2) {
+  let d2 : @types.PokemonType? = if parts.length() == 2 {
+    match @types.type_from_jp(parts[1]) {
       Some(t) => Some(t)
       None => {
-        println("Error: Unknown type: " + def_type2)
+        println("Error: Unknown type: " + parts[1])
         return
       }
     }
@@ -647,8 +734,8 @@ fn run_type_chart(
   }
   let eff = @types.get_dual_effectiveness(atk, d1, d2)
   let def_str = match d2 {
-    Some(t2) => def_type1 + "/" + @types.type_to_jp(t2)
-    None => def_type1
+    Some(t2) => parts[0] + "/" + @types.type_to_jp(t2)
+    None => parts[0]
   }
   println(move_type + " -> " + def_str + ": " + format_effectiveness(eff))
 }
@@ -912,18 +999,51 @@ fn run_stat_calc(
   game : GameContext,
   format : @cli.OutputFormat,
 ) -> Unit {
-  let evs = @cli.parse_csv_ints(evs_str, 0, 6)
-  let ivs = @cli.parse_csv_ints(ivs_str, 31, 6)
+  let is_champ = game.version == "champions"
   let nature = resolve_nature(nature_name, nature_up, nature_down)
-  with_db(fn(db) {
-    match @db.query_pokemon(db, name, game.version) {
-      Ok(pokemon) => {
-        let stats = @damage.calc_all_stats(pokemon, ivs, evs, nature)
-        println(@cli.format_stat_calc(pokemon, stats, nature, ivs, evs, format))
+  if is_champ {
+    let sps = @cli.parse_csv_ints(evs_str, 0, 6)
+    // Validate SP constraints
+    let mut total = 0
+    for i = 0; i < 6; i = i + 1 {
+      if sps[i] < 0 || sps[i] > 32 {
+        println("Error: SP values must be 0-32, got " + sps[i].to_string())
+        return
       }
-      Err(e) => println("Error: " + e)
+      total = total + sps[i]
     }
-  })
+    if total > 66 {
+      println("Error: Total SP must be ≤ 66, got " + total.to_string())
+      return
+    }
+    with_db(fn(db) {
+      match @db.query_pokemon(db, name, game.version) {
+        Ok(pokemon) => {
+          let stats = @damage.calc_all_stats_champions(pokemon, sps, nature)
+          println(
+            @cli.format_stat_calc(
+              pokemon, stats, nature, sps, sps, format, is_champions=true,
+            ),
+          )
+        }
+        Err(e) => println("Error: " + e)
+      }
+    })
+  } else {
+    let evs = @cli.parse_csv_ints(evs_str, 0, 6)
+    let ivs = @cli.parse_csv_ints(ivs_str, 31, 6)
+    with_db(fn(db) {
+      match @db.query_pokemon(db, name, game.version) {
+        Ok(pokemon) => {
+          let stats = @damage.calc_all_stats(pokemon, ivs, evs, nature)
+          println(
+            @cli.format_stat_calc(pokemon, stats, nature, ivs, evs, format),
+          )
+        }
+        Err(e) => println("Error: " + e)
+      }
+    })
+  }
 }
 
 ///|
@@ -937,18 +1057,30 @@ fn run_stat_reverse(
   game : GameContext,
   format : @cli.OutputFormat,
 ) -> Unit {
+  let is_champ = game.version == "champions"
   if stats_str.length() > 0 {
     // Pokemon mode
     let actual_stats = @cli.parse_csv_ints(stats_str, 0, 6)
     with_db(fn(db) {
       match @db.query_pokemon(db, target, game.version) {
         Ok(pokemon) => {
-          let results = @damage.reverse_spread(pokemon, actual_stats, iv)
-          println(
-            @cli.format_stat_reverse_pokemon(
-              pokemon, actual_stats, results, format,
-            ),
-          )
+          if is_champ {
+            let results = @damage.reverse_spread_champions(
+              pokemon, actual_stats,
+            )
+            println(
+              @cli.format_stat_reverse_pokemon(
+                pokemon, actual_stats, results, format, is_champions=true,
+              ),
+            )
+          } else {
+            let results = @damage.reverse_spread(pokemon, actual_stats, iv)
+            println(
+              @cli.format_stat_reverse_pokemon(
+                pokemon, actual_stats, results, format,
+              ),
+            )
+          }
         }
         Err(e) => println("Error: " + e)
       }
@@ -965,12 +1097,31 @@ fn run_stat_reverse(
       "down" => (9, 10)
       _ => (1, 1)
     }
-    let base = @damage.reverse_base_from_stat(
-      actual, iv, ev, is_hp, nature_num, nature_den,
-    )
-    println(
-      @cli.format_stat_reverse_single(actual, base, iv, ev, is_hp, nature_mod, format),
-    )
+    if is_champ {
+      if ev < 0 || ev > 32 {
+        println(
+          "Error: SP values must be 0-32, got " + ev.to_string(),
+        )
+        return
+      }
+      let base = @damage.reverse_base_from_stat_champions(
+        actual, ev, is_hp, nature_num, nature_den,
+      )
+      println(
+        @cli.format_stat_reverse_single(
+          actual, base, 0, ev, is_hp, nature_mod, format, is_champions=true,
+        ),
+      )
+    } else {
+      let base = @damage.reverse_base_from_stat(
+        actual, iv, ev, is_hp, nature_num, nature_den,
+      )
+      println(
+        @cli.format_stat_reverse_single(
+          actual, base, iv, ev, is_hp, nature_mod, format,
+        ),
+      )
+    }
   }
 }
 
@@ -1015,22 +1166,72 @@ fn run_hbd(
       }
     }
   }
-  let ivs = @cli.parse_csv_ints(ivs_str, 31, 6)
+  let is_champ = game.version == "champions"
   let nature = resolve_nature(nature_name, nature_up, nature_down)
   let weights : @damage.HbdWeights = { phys: phys_weight, spec: spec_weight }
-  with_db(fn(db) {
-    match @db.query_pokemon(db, name, game.version) {
-      Ok(pokemon) => {
-        let result = if top <= 1 {
-          @damage.optimize_hbd(pokemon, fixed_ev, ivs, nature, snap, weights)
-        } else {
-          @damage.optimize_hbd_topn(
-            pokemon, fixed_ev, ivs, nature, snap, weights, top,
+  if is_champ {
+    // Champions: validate per-stat cap and total SP budget
+    let mut fixed_total = 0
+    for i = 0; i < 6; i = i + 1 {
+      if fixed_ev[i] >= 0 {
+        if fixed_ev[i] > 32 {
+          println(
+            "Error: SP values must be 0-32, got " + fixed_ev[i].to_string(),
+          )
+          return
+        }
+        fixed_total = fixed_total + fixed_ev[i]
+      }
+    }
+    if fixed_total > 66 {
+      println(
+        "Error: total fixed SP (" +
+        fixed_total.to_string() +
+        ") exceeds Champions budget of 66",
+      )
+      return
+    }
+    with_db(fn(db) {
+      match @db.query_pokemon(db, name, game.version) {
+        Ok(pokemon) => {
+          let result = if top <= 1 {
+            @damage.optimize_hbd_champions(
+              pokemon, fixed_ev, nature, snap, weights,
+            )
+          } else {
+            @damage.optimize_hbd_topn_champions(
+              pokemon, fixed_ev, nature, snap, weights, top,
+            )
+          }
+          println(
+            @cli.format_hbd(
+              pokemon, nature, snap, weights, result, format, is_champions=true,
+            ),
           )
         }
-        println(@cli.format_hbd(pokemon, nature, snap, weights, result, format))
+        Err(e) => println("Error: " + e)
       }
-      Err(e) => println("Error: " + e)
-    }
-  })
+    })
+  } else {
+    let ivs = @cli.parse_csv_ints(ivs_str, 31, 6)
+    with_db(fn(db) {
+      match @db.query_pokemon(db, name, game.version) {
+        Ok(pokemon) => {
+          let result = if top <= 1 {
+            @damage.optimize_hbd(
+              pokemon, fixed_ev, ivs, nature, snap, weights,
+            )
+          } else {
+            @damage.optimize_hbd_topn(
+              pokemon, fixed_ev, ivs, nature, snap, weights, top,
+            )
+          }
+          println(
+            @cli.format_hbd(pokemon, nature, snap, weights, result, format),
+          )
+        }
+        Err(e) => println("Error: " + e)
+      }
+    })
+  }
 }

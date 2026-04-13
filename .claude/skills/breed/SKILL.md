@@ -77,17 +77,34 @@ Phase 1でDB結果を `pokemon` オブジェクトにマージし、以降のPha
 
 ## 実数値計算式
 
-Lv50, IV=31固定で以下の式を使用する。スキル実行中、Claudeがこの式に従い計算を行う。
+### Champions SP（デフォルト）
+
+pkdx のデフォルトバージョンは Champions。EV/IV は廃止され SP (Stat Points) に統一されている。
+
+```
+HP = BaseStat + SP + 75
+他 = floor((BaseStat + SP + 20) * nature_mod)
+
+nature_mod: 上昇=1.1(11/10), 無補正=1.0, 下降=0.9(9/10)
+```
+
+- 各ステータス最大: **32**
+- 合計上限: **66**
+- SP=0時: HP → base+75, 他 → base+20
+- SP=32時: HP → base+107, 他 → base+52
+
+Phase 6 では「SP配分」として 0-32 の範囲で配分を行い、合計 66 以下を制約とする。従来の 508 EV 配分を SP で再現すると 1 ポイント余る（SP の +1 優位）。詳細は `team-builder/references/champions_sp.md` を参照。
+
+### Deprecated: EV/IV 式（scarlet_violet 等）
+
+`--version scarlet_violet` 等の旧バージョン指定時のみ使用。IV=31 固定。
 
 ```
 HP = floor((base*2 + 31 + floor(EV/4)) * 50 / 100) + 60
 他 = floor((floor((base*2 + 31 + floor(EV/4)) * 50 / 100) + 5) * nature_mod)
-
-nature_mod: 上昇=1.1, 無補正=1.0, 下降=0.9
 ```
 
-EV=0時の近似: HP → base+75, 他 → base+20（無補正）
-EV=252時の近似: HP → base+107, 他 → base+52（無補正）
+Phase 6 では「努力値配分」として各 0-252、合計 510 以下を制約とする。
 
 ## 性格テーブル
 
