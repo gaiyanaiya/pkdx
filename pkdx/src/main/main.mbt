@@ -131,6 +131,9 @@ fn build_cli() -> @admiral.CliApp {
       cmd_init_cache(),
       cmd_hbd(),
       cmd_learners(),
+      cmd_nash(),
+      cmd_select(),
+      cmd_meta_divergence(),
     ],
   )
 }
@@ -158,7 +161,15 @@ fn cmd_moves() -> @admiral.CommandDef {
   @admiral.command(
     name="moves",
     description="List moves a Pokemon can learn",
-    options=[version_option(), regulation_option(), format_option()],
+    options=[
+      version_option(),
+      regulation_option(),
+      format_option(),
+      @admiral.bool(
+        "include-inactive",
+        description="Include Champions confiscated moves (state=inactive)",
+      ),
+    ],
     positionals=[
       @admiral.positional(
         "target",
@@ -167,7 +178,12 @@ fn cmd_moves() -> @admiral.CommandDef {
       ),
     ],
     run=Some(fn(ctx) {
-      run_moves(ctx_str(ctx, "target"), ctx_game(ctx), ctx_format(ctx))
+      run_moves(
+        ctx_str(ctx, "target"),
+        ctx_game(ctx),
+        ctx_format(ctx),
+        ctx.get_bool("include-inactive"),
+      )
     }),
   )
 }
@@ -518,6 +534,7 @@ fn run_moves(
   target : String,
   game : GameContext,
   format : @cli.OutputFormat,
+  include_inactive : Bool,
 ) -> Unit {
   with_db(fn(db) {
     let global_no = if is_numeric(target) {
@@ -531,7 +548,8 @@ fn run_moves(
         }
       }
     }
-    match @db.query_moves(db, global_no, game.version) {
+    let r = @db.query_moves(db, global_no, game.version, include_inactive~)
+    match r {
       Ok(moves) => println(@cli.format_moves(moves, format))
       Err(e) => println("Error: " + e)
     }
@@ -571,6 +589,10 @@ fn cmd_learners() -> @admiral.CommandDef {
       regulation_option(),
       format_option(),
       @admiral.int("limit", description="Max results (default 50)", default=Some(50)),
+      @admiral.bool(
+        "include-inactive",
+        description="Include Champions confiscated moves (state=inactive)",
+      ),
     ],
     positionals=[
       @admiral.positional(
@@ -585,6 +607,7 @@ fn cmd_learners() -> @admiral.CommandDef {
         ctx_int(ctx, "limit"),
         ctx_game(ctx),
         ctx_format(ctx),
+        ctx.get_bool("include-inactive"),
       )
     }),
   )
@@ -596,9 +619,11 @@ fn run_learners(
   limit : Int,
   game : GameContext,
   format : @cli.OutputFormat,
+  include_inactive : Bool,
 ) -> Unit {
   with_db(fn(db) {
-    match @db.query_learners(db, move_name, game.version) {
+    let r = @db.query_learners(db, move_name, game.version, include_inactive~)
+    match r {
       Ok(results) => {
         let filtered = if game.regulation != "" {
           results.filter(fn(p) { @db.is_available(p.global_no, game.regulation) })
@@ -1234,4 +1259,193 @@ fn run_hbd(
       }
     })
   }
+}
+
+///|
+/// `pkdx nash` — Nash equilibrium solver. Reads a JSON payoff specification
+/// from stdin and solves the zero-sum game. Accepts either an explicit
+/// matrix or a monocycle character list; rejects inputs that provide both.
+fn cmd_nash() -> @admiral.CommandDef {
+  @admiral.command(
+    name="nash",
+    description="Solve a zero-sum Nash equilibrium or emit a DOT payoff graph",
+    subcommands=[
+      @admiral.command(
+        name="solve",
+        description="Solve the Nash equilibrium from a payoff JSON on stdin",
+        run=Some(fn(_ctx) { run_nash_solve_cmd() }),
+      ),
+      @admiral.command(
+        name="graph",
+        description="Emit a Graphviz DOT representation of the payoff matrix",
+        options=[
+          @admiral.string(
+            "threshold",
+            description="Edge absolute-value threshold (default 0)",
+            default=Some("0"),
+          ),
+        ],
+        run=Some(fn(ctx) { run_nash_graph_cmd(ctx_str(ctx, "threshold")) }),
+      ),
+    ],
+  )
+}
+
+///|
+fn read_stdin_json() -> String {
+  let raw = pkdx_read_stdin()
+  if raw.length() == 0 {
+    exit_error("No input from stdin")
+  }
+  raw
+}
+
+///|
+fn run_nash_solve_cmd() -> Unit {
+  let raw = read_stdin_json()
+  let out = try @payoff.run_nash_solve(raw) catch {
+    err => {
+      exit_error(nash_cli_error_message(err))
+      return
+    }
+  }
+  println(out)
+}
+
+///|
+fn parse_double(s : String, default : Double) -> Double {
+  // Accept simple decimals like "0.5", "-1.25", "0" — delegate to strconv if
+  // available; otherwise fall back to integer parsing via existing helper.
+  let mut result = 0.0
+  let mut i = 0
+  let mut negative = false
+  if i < s.length() && s[i] == '-' {
+    negative = true
+    i = i + 1
+  }
+  let mut has_digit = false
+  let mut in_frac = false
+  let mut frac_scale = 1.0
+  while i < s.length() {
+    let c = s[i].to_int()
+    if c >= 0x30 && c <= 0x39 {
+      let d = (c - 0x30).to_double()
+      if in_frac {
+        frac_scale = frac_scale * 0.1
+        result = result + d * frac_scale
+      } else {
+        result = result * 10.0 + d
+      }
+      has_digit = true
+    } else if c == 0x2E && not(in_frac) {
+      in_frac = true
+    } else {
+      break
+    }
+    i = i + 1
+  }
+  if not(has_digit) {
+    return default
+  }
+  if negative {
+    -result
+  } else {
+    result
+  }
+}
+
+///|
+fn run_nash_graph_cmd(threshold_str : String) -> Unit {
+  let raw = read_stdin_json()
+  let threshold = parse_double(threshold_str, 0.0)
+  let out = try @payoff.run_nash_graph(raw, threshold) catch {
+    err => {
+      exit_error(nash_cli_error_message(err))
+      return
+    }
+  }
+  println(out)
+}
+
+///|
+/// Map a `NashCliError` to a human-readable message. Kept inline so we don't
+/// need to add a Show impl that leaks internal field layout.
+fn nash_cli_error_message(err : @payoff.NashCliError) -> String {
+  match err {
+    InvalidJson(msg) => "invalid JSON: " + msg
+    MissingField(field) => "missing field: " + field
+    ConflictingInputs => "both matrix and characters provided; pick one"
+    NonSquareMatrix(r, c) =>
+      "matrix is not square: " + r.to_string() + "x" + c.to_string()
+    LabelCountMismatch(expected, got) =>
+      "labels length mismatch: expected " +
+      expected.to_string() +
+      ", got " +
+      got.to_string()
+    InfeasibleGame => "game is infeasible"
+    UnboundedGame => "game is unbounded"
+    InnerError(msg) => "solver error: " + msg
+  }
+}
+
+///|
+/// `pkdx select` — selection-optimisation command. Reads a team/opponent JSON
+/// bundle from stdin and outputs the mixed-strategy distribution over
+/// k-selections.
+fn cmd_select() -> @admiral.CommandDef {
+  @admiral.command(
+    name="select",
+    description="Compute Nash-optimal selection distribution from team JSON on stdin",
+    run=Some(fn(_ctx) { run_select_cmd() }),
+  )
+}
+
+///|
+fn run_select_cmd() -> Unit {
+  let raw = read_stdin_json()
+  let out = try @payoff.run_select(raw) catch {
+    err => {
+      exit_error(nash_cli_error_message(err))
+      return
+    }
+  }
+  println(out)
+}
+
+///|
+/// `pkdx meta-divergence` — measure how far a usage distribution is from a
+/// self-best-response equilibrium given a symmetric payoff matrix.
+fn cmd_meta_divergence() -> @admiral.CommandDef {
+  @admiral.command(
+    name="meta-divergence",
+    description="Report exploitability and per-index regret of a usage distribution",
+    run=Some(fn(_ctx) { run_meta_divergence_cmd() }),
+  )
+}
+
+///|
+fn meta_cli_error_message(err : @payoff.MetaCliError) -> String {
+  match err {
+    InvalidJsonMeta(msg) => "invalid JSON: " + msg
+    MissingFieldMeta(field) => "missing field: " + field
+    UsageNotNormalised(total) =>
+      "usage does not sum to 1 (got " + total.to_string() + ")"
+    ShapeMismatch(n, m) =>
+      "matrix / usage shape mismatch: " +
+      n.to_string() +
+      " vs " +
+      m.to_string()
+  }
+}
+
+///|
+fn run_meta_divergence_cmd() -> Unit {
+  let raw = read_stdin_json()
+  let out = try @payoff.run_meta_divergence(raw) catch {
+    err => {
+      exit_error(meta_cli_error_message(err))
+      return
+    }
+  }
+  println(out)
 }
