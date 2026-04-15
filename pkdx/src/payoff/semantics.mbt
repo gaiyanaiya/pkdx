@@ -14,6 +14,16 @@
 pub(all) enum PayoffModel {
   Best1v1
   NashResponses
+  MonteCarloSim(Int, UInt64)
+} derive(Show, Eq)
+
+///|
+/// Team-level payoff model. `Pairwise` wraps any pairwise `PayoffModel`
+/// (Phase 0-12 behaviour); `SwitchingGame(turn_limit)` evaluates each
+/// (selection, selection) cell as an extensive-form game with switching.
+pub(all) enum TeamPayoffModel {
+  Pairwise(PayoffModel)
+  SwitchingGame(Int)
 } derive(Show, Eq)
 
 ///|
@@ -27,10 +37,14 @@ pub(all) struct Combatant {
   item : String
   tera_type : String
   stat_system : @model.StatSystem
+  // メガ進化後のステータス差分。`None` なら mega 不可。`Some(_)` なら
+  // `SwitchingGame` の `Mega` アクションで mega_form 値に切り替わる。
+  mega_form : @model.MegaForm?
 } derive(Show)
 
 ///|
 pub suberror PayoffError {
   EmptyCombatants
   EmptyMoves(String)
+  UnsupportedFormat(String)
 } derive(Show)

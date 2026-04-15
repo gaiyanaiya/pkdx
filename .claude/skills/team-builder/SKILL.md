@@ -129,7 +129,7 @@ AskUserQuestionでゲームバージョンを質問:
 - その他（ユーザー入力）
 
 `champions` 選択時は続けてレギュレーションを質問:
-- `M-A`（現在唯一のレギュレーション）
+- `M-A`（current）
 
 キャッシュに `version` と `regulation` を記録。`regulation` は champions 以外では空文字。
 
@@ -138,6 +138,21 @@ AskUserQuestionでゲームバージョンを質問:
 ---
 
 ## Phase 1: 軸ポケモン決定
+
+### version=champions の場合: チーム入力方式分岐
+
+Phase 0 で `version=champions` を選択した場合、Phase 1 の冒頭で入力方式を質問する。それ以外の version では、直接「Phase 1 対話モード」に進む。
+
+**AskUserQuestion**（1問）:
+
+| # | 質問 | header | オプション | multiSelect |
+|---|------|--------|-----------|-------------|
+| 1 | チーム入力方式を選んでください | 入力方式 | 対話で 1 体ずつ構築(desc: 従来通り Phase 1-5), ゲームのスクショから一括取り込み(desc: チーム画面の「能力」+「ステータス」2 枚から 6 体を OCR) | false |
+
+- `対話で 1 体ずつ構築` → 下記「Phase 1 対話モード」へ
+- `ゲームのスクショから一括取り込み` → [Phase 1-Team-Vision](#phase-1-team-vision-champions-チーム一括取り込み) へ
+
+### Phase 1 対話モード
 
 AskUserQuestionで軸ポケモンを聞く:
 ```
@@ -170,6 +185,122 @@ ruby $REPO_ROOT/scripts/patch_mega.rb
 取得できなかった場合は「パッチ対象に含まれていないポケモンです」と案内する。
 
 結果からglobalNoを取得し、以降のフェーズで使用。
+
+---
+
+## Phase 1-Team-Vision: Champions チーム一括取り込み
+
+Champions のチーム画面スクショ **2 枚 (能力 + ステータス)** から 6 体分の team cache を冪等に構築する。1 枚に 6 体が並ぶ UI のため、12 枚や 1 体ずつのループは不要。
+
+### 1. スクショ添付依頼
+
+ユーザーへ以下のメッセージを出力し、**次のメッセージで 2 枚の画像を会話に添付してもらう** (AskUserQuestion ではファイル添付できないためテキスト指示):
+
+```
+Champions のチーム画面スクショ 2 枚を、次のメッセージにまとめて貼ってください:
+ - 「能力」画面 (特性・持ち物・技 4 つ が 6 体分見えるもの)
+ - 「ステータス」画面 (SP・実数値・性格 ↑↓ が 6 体分見えるもの)
+```
+
+ユーザーからの次のメッセージに添付された画像 path (会話履歴に残る一時パス、例: `/var/folders/.../Image.png` 等) を Read ツールで読み込んで vision 抽出に進む。画像が 1 枚しか無い / 関係ない画像の場合はもう一度添付を依頼する。
+
+### 2. Vision 抽出 (6 体一括)
+
+2 枚の画像から、6 体それぞれについて以下を**一度に** vision で抽出する:
+
+- **ポケモン名** (日本語カタカナ)、性別マーク (♂/♀/無性別)
+- **特性**、**持ち物** (能力画面)
+- **技 4 つ** (能力画面、名前のみ)
+- **SP 配分** (ステータス画面、各 ≤ 32、合計 ≤ 66)
+- **実数値** (ステータス画面、検算用)
+- **性格 ↑↓ マーカー** (ステータス画面、ステータス名右の↑/↓記号)
+
+中間結果は 6 体分まとめて表示する (体ごとに分割表示しない)。
+
+### 3. 各体ごとの DB 照合 / SP 逆算 / 性格確定 / 技補完
+
+抽出した 6 体について、ポケモンごとに以下を順次実行する。ユーザー対話は発生させず一括で進める (性格が一意に決まらない個体だけ、後段の確認時にまとめて選ばせる):
+
+1. **DB 照合**: `pkdx query "<name>" --version champions --format json` で種族値・タイプ・特性候補を取得。Champions 側で未登録なら `--version scarlet_violet` で fallback
+2. **SP 逆算検証**: `pkdx stat-reverse "<name>" --stats "<HP>,<A>,<B>,<C>,<D>,<S>" --version champions --format json` の出力 SP と vision 抽出 SP を比較。複数解は「いずれかと一致」で OK
+3. **性格確定**: ↑↓マーカーが読めていれば性格テーブルから直接特定。読めない場合は SP + 実数値の整合性で候補を絞る (`team-builder/references/champions_sp.md` 参照)。候補 1 つなら自動確定、複数候補は後段で AskUserQuestion
+4. **技詳細補完**: `pkdx moves "<name>" --version champions --format json` で抽出した 4 つの技名を DB 照合し `type/category/power/accuracy` を埋める
+
+### 4. 6 体分まとめて表示 + 一括確認
+
+```
+=== Champions チーム抽出結果 (6/6 体) ===
+[1] マンムー (ようき / こだわりスカーフ / あついしぼう)
+    SP: H20 A32 B0 C0 D0 S14  技: じしん / つららおとし / つららばり / ばかぢから
+[2] アシレーヌ (れいせい / しんぴのしずく / げきりゅう)
+    SP: ...
+...
+[6] ヌメルゴン(ヒスイ) (ずぶとい / たべのこし / シェルアーマー)
+    SP: ...
+```
+
+メガ石 (「〇〇ナイト」) を検出した体があれば末尾に警告:
+```
+⚠ 次のポケモンはメガ石を所持しています: ハッサム, キュウコン
+   メガ進化の戦闘評価は task B 実装後に有効になります。
+```
+
+**AskUserQuestion**（1問）:
+
+| # | 質問 | header | オプション | multiSelect |
+|---|------|--------|-----------|-------------|
+| 1 | このチーム構成でよいですか? | 確認 | はい(desc: team cache 組み立てに進む), 修正する(desc: 特定のポケモンの項目を個別修正), やり直す(desc: スクショ添付から再実行) | false |
+
+- `修正する` → どのポケモン (1-6) のどの項目 (技 / 持ち物 / 性格 / SP 等) を上書きするか AskUserQuestion で選び、個別に修正
+- `やり直す` → 手順 1 (スクショ添付依頼) から全体リセット
+
+### 5. 取り込み後の動線を選択
+
+**AskUserQuestion**（1問）:
+
+| # | 質問 | header | オプション | multiSelect |
+|---|------|--------|-----------|-------------|
+| 1 | この後どうしますか? | 動線 | メタ分析・選出方針も対話で構築(desc: Phase 6 (仮想敵分析) に進む), 保存のみ(desc: Phase 8 に直行。メタ分析は空欄) | false |
+
+- `メタ分析・選出方針も対話で構築` → Phase 6 に進む。team cache の members[0..5] は埋まっているので Phase 2-5 (軸分析・補完・素早さ・耐久) は skip
+- `保存のみ` → team cache の `matchup_plans` / `strengths` / `weaknesses` を空配列のまま、Phase 8 に直行。出力 md の冒頭に「⚠ メタ分析セクションは未記入。`/team-builder` で再開可能」と注記を入れる
+
+### 6. team cache 組み立て + 冪等性判定
+
+1. cache スケルトン生成:
+
+```bash
+$PKDX init-cache team > "$CACHE_FILE"
+```
+
+2. 抽出 6 体を members に詰め、`version: "champions"`, `regulation: "M-A"`, `battle_format: "singles"`, `mechanics: "メガシンカ"` (該当時) を明記
+
+3. `pkdx import-check` で冪等性判定:
+
+```bash
+EXISTING_DIR="$REPO_ROOT/box/teams"
+if [ -d "$EXISTING_DIR" ]; then
+  EXISTING=$(for f in "$EXISTING_DIR"/*.meta.json; do
+    [ -f "$f" ] && jq --arg p "$f" '{path: $p, content: .}' "$f"
+  done | jq -s '.')
+else
+  EXISTING='[]'
+fi
+
+jq -n \
+  --slurpfile cache "$CACHE_FILE" \
+  --argjson existing "$EXISTING" \
+  '{kind: "team", cache: $cache[0], existing: $existing}' | \
+  $PKDX import-check
+```
+
+出力に応じて分岐:
+
+- `{"status":"skip", "matched_file": "..."}` → 既に同一データあり。**AskUserQuestion**: `保存せず終了` / `別名で保存する` / `やり直す`
+- `{"status":"diff", "matched_file": "...", "differing_fields": [...]}` → 差分を表示し、**AskUserQuestion**: `新規ファイルとして保存` / `既存を上書き` / `保存せず終了`
+- `{"status":"new"}` → そのまま次のステップへ
+
+4. ユーザー承認後、選んだ動線 (Phase 6 or Phase 8) に進む
 
 ---
 
@@ -629,42 +760,6 @@ megaメカニクスが有効な場合:
 - メガ後の種族値・タイプ・特性を取得して比較
 - AskUserQuestionで確定
 
-### 7-6: Nash 均衡による選出分布の提示（任意）
-
-選出最適化をデータ駆動で裏取りしたい場合、`pkdx select` を呼び出して
-`PayoffModel=Best1v1` で選出単位の Nash 均衡分布を取得する。手作業の選出提案
-（7-3）と突き合わせ、乖離があれば再検討する。
-
-**入力**: 自軍 6 体 + 想定される仮想敵 6 体（Phase 6 で確定済）。
-
-**前提**: nash 系サブコマンドは macOS/Linux のみ対応（Windows では非対応）。
-
-```bash
-# 仮想敵リストも含めた team JSON を構築し stdin で渡す。
-cat <<'JSON' | $PKDX select
-{
-  "team": [
-    {"name":"<name>","type1":"<t1>","type2":"<t2>","hp":<h>,"atk":<a>,"def":<b>,
-     "spa":<c>,"spd":<d>,"spe":<s>,"ability":"<abil>","item":"<item>","tera":"<tera>",
-     "moves":[{"name":"<mv>","type":"<t>","category":"physical|special","power":<p>}, ...]},
-    ... (6 体ぶん)
-  ],
-  "opponent": [ ... (仮想敵 6 体) ],
-  "format": "single"
-}
-JSON
-```
-
-出力の `row_strategy` は自軍選出 20 (single) または 15 (double) 通りの確率分布。
-確率 > 1% のセレクションを「推奨選出」として 7-3 の手選出と比較する。
-
-`value` と `exploitability` も併せて提示。`exploitability < 1e-6` なら解析解、
-それ以上なら LP が退化している可能性があるので結果を保守的に扱う。
-
-**注意**: 現バージョンは `ability`/`item`/`tera` を JSON で指定できるが、天候・
-ランク補正・フィールドは考慮されない。あくまで「技の生ダメージ + 素早さ」で
-の近似結果であることを明記して提示する。詳細は `.claude/skills/nash/SKILL.md`
-と `.claude/skills/nash/references/payoff_semantics.md` を参照。
 
 ---
 

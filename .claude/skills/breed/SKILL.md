@@ -243,7 +243,6 @@ EV: H0 A0 B0 C0 D0 S0 (残り: 510/510)
 ```
 
 ---
-
 ## Phase 2: 性格選択
 
 **AskUserQuestion**（1問）:

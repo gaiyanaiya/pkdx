@@ -38,8 +38,20 @@ fn mk_move(
   type_ : String,
   category : @model.MoveCategory,
   power : Int,
+  priority~ : Int = 0,
+  stat_effects~ : Array[(Int, Int)] = [],
 ) -> @model.Move {
-  { name, type_, category, power, accuracy: 100, pp: 10, learn_method: "" }
+  {
+    name,
+    type_,
+    category,
+    power,
+    accuracy: 100,
+    pp: 10,
+    learn_method: "",
+    priority,
+    stat_effects,
+  }
 }
 
 ///|
@@ -49,6 +61,7 @@ fn mk_combatant(
   ability~ : String = "",
   item~ : String = "",
   tera_type~ : String = "",
+  mega_form~ : @model.MegaForm? = None,
 ) -> Combatant {
   {
     pokemon,
@@ -57,5 +70,6 @@ fn mk_combatant(
     item,
     tera_type,
     stat_system: @model.Standard,
+    mega_form,
   }
 }
