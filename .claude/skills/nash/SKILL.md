@@ -23,13 +23,13 @@ PKDX=$REPO_ROOT/bin/pkdx
 | value | 行プレイヤーから見たゲーム値 (期待利得) |
 | exploitability | 現在の戦略 σ に対する最良応答で得られる追加利得。零和で 0 なら σ は Nash 均衡 |
 | support | 確率 > 0 の純戦略 index 集合 |
-| PayoffModel | 利得の作り方 (`best1v1` = 最大ダメージ技+素早さで勝率 / `nash_responses` = 技×技内部 Nash) |
-| BattleFormat | `single` = 3 体選出 (20x20) / `double` = 4 体選出 (15x15) |
+| TeamPayoffModel | 利得の作り方 (`switching_game` / `screened_switching_game:<trials>:<seed>:<keep_top>`)。turn_limit 既定は MC=5 / DP=5 (`switching_game:<N>` で個別上書き可) |
+| BattleFormat | `single` = 3 体選出 (20x20) のみ対応 (`double` は現状未サポート) |
 
 詳細はまず `references/` を参照:
 - `references/theory.md` — 零和 LP / Simplex / Fictitious play / MWU の数式と根拠
 - `references/exploitability.md` — exploitability / NashConv / KL / L1 の定義と使い分け
-- `references/payoff_semantics.md` — Best1v1 / NashResponses の仕様と選択基準
+- `references/payoff_semantics.md` — SwitchingGame / ScreenedSwitchingGame の仕様と選択基準
 
 ## Phase 0: 初期化
 
@@ -129,20 +129,75 @@ JSON
 
 ### 入力の収集
 
-team (6 体), opponent (6 体), format (single/double), payoff_model (pairwise) または team_payoff_model (team-level) を取得する。team は `box/teams/` のキャッシュまたはユーザー直接入力。
+team (6 体), opponent (6 体), format (single のみ対応), `team_payoff_model` を取得する。
 
-#### モデル選択肢
+#### データソース
 
-**pairwise (`payoff_model` フィールド)**:
-- `"best1v1"` (デフォルト) — 速くて分かりやすい、技選択は固定
-- `"nash_responses"` — 内部 move-vs-move Nash、技循環をモデル化
-- `"monte_carlo:<trials>:<seed>"` — seeded RNG でダメージ乱数込み (例: `"monte_carlo:1000:42"`)
+1. **`box/teams/*.meta.json`** (推奨) — team-builder Phase 8 または Champions スクショ取り込みで生成される。`.meta.json` の `members` 配列がそのまま combatant として使える (`types[]` + `base_stats{}` 形式を `pkdx select` が直接受け付ける)。
+2. **ユーザー直接入力** — 上記がない場合、ポケモン名・ステータス・技を対話で収集する。
 
-**team-level (`team_payoff_model` フィールド、Phase 13)**:
-- `"pairwise:<model_string>"` — 上記 pairwise のラッパー (`"pairwise:best1v1"` 等)
-- `"switching_game:<turn_limit>"` — 交代込み extensive-form ゲーム木 (先制技 / ランク補正技に対応)
+#### `.meta.json` からの読み込み手順
 
-両方指定された場合は `team_payoff_model` 優先。詳細は `references/payoff_semantics.md`。
+```bash
+# 1. 自チームの .meta.json を特定
+ls box/teams/*.meta.json
+
+# 2. members を team / opponent に詰め替えて select に渡す
+# skill は .meta.json の "members" を "team" キーに、
+# 相手の .meta.json の "members" を "opponent" キーに設定する。
+# battle_format は "singles" → "single" に変換。
+```
+
+**重要**: `.meta.json` の `members` にはステータスが種族値 (`base_stats`) の場合と実数値 (`hp`/`atk`/...) の場合がある。Champions スクショ取り込み経由なら実数値が揃っているが、skill 手順で作成した場合は種族値のみの可能性がある。足りないデータ (実数値、priority、stat_effects 等) がある場合はユーザーに補完を促す。
+
+#### モデル選択肢 (`team_payoff_model` フィールド)
+
+- `"switching_game"` (既定) — 交代込み extensive-form ゲーム木。DP turn_limit=5 既定 (先制技 / ランク補正技に対応)。長期戦評価が必要なら `"switching_game:<N>"` で turn_limit を上書き可
+- `"screened_switching_game:<trials>:<seed>:<keep_top>"` — MC で選出行列を screening (rollout turn_limit=5)、下位を quantile cutoff で枝刈り、残存 sub-matrix だけ SwitchingGame DP (refine turn_limit=5 既定)。例: `"screened_switching_game:1000:42:0.3"`。refine turn_limit を上書きしたいときは `"screened_switching_game:<trials>:<seed>:<keep_top>:<turn_limit>"`
+
+**チューニングガイド (ScreenedSwitchingGame)**:
+
+パラメータは 3 つ: `trials`, `seed`, `keep_top`。C(6,3)² = 400 セルの screening 空間を前提に設計。
+
+| パラメータ | 推奨範囲 | 既定推奨 | 根拠 |
+|---|---|---|---|
+| `trials` | 500–2000 | 1000 | √1000 ≈ 32 → MC 標準誤差 ≈ 1/32 ≈ 3%。400 セル × 1000 trials = 400K rollout で Phase A 2–5 秒 |
+| `keep_top` | 0.25–0.5 | 0.3 | 20 selections × 0.3 = 6 retained。Phase C コスト ∝ 6² = 36 セル (元の 9%)。Nash support サイズが通常 3–6 なので 0.3 で十分カバー |
+| `seed` | 任意 UInt64 | 42 | 再現性が必要なら固定。同一 seed で同一結果を保証 |
+
+**入力サイズ別ガイド**:
+- **C(4,3)=4 selections**: keep_top ≥ 0.5 推奨 (4 × 0.3 = 1.2 → ceil = 2 は少なすぎる)
+- **C(5,3)=10 selections**: keep_top=0.3–0.5 (3–5 retained)
+- **C(6,3)=20 selections**: keep_top=0.25–0.3 (5–6 retained)。典型的なシングル 6v6 ケース
+
+**Phase B 枝刈りの安全性**: screening 行列に Nash を解いてから、相手の Nash 均衡戦略下での期待値で各選出をスコアリングする。Nash support の選出はすべてゲーム値で同率首位になるため、`keep_top × n ≥ |Nash support|` であれば support が枝刈りされることはない。
+
+**重要な trade-off**: screening は MC 40000-80000 rollout のオーバヘッドを伴う。`switching_game` が単独で 10 秒以内に完走する場合、screening を挟むと逆に遅くなる。先に `time bin/pkdx select` で素の `switching_game` を計測し、30 秒以上かかるとき初めて `screened_switching_game` を使う。Nash value は両モデル間で一致することを合成データで確認済み。
+
+詳細は `references/payoff_semantics.md`。
+
+#### 読みターン数の決定 (AskUserQuestion)
+
+`team_payoff_model` 文字列を構築する直前に、ユーザーに「何ターン先まで読むか」を AskUserQuestion で必ず確認する。選択結果を `switching_game:<N>` / `screened_switching_game:<trials>:<seed>:<keep_top>:<N>` の `<N>` に埋め込む。
+
+| # | 質問 | header | オプション |
+|---|------|--------|-----------|
+| 1 | 何ターン先まで読みますか？ | 読みの深さ | おまかせ（5ターン先まで・通常対戦向け）, じっくり読む（10ターン先まで・積み展開も評価／時間長め）, サクッと（3ターン先まで・パーティ調整中の素早い確認） |
+
+ユーザー視点の言い換え（質問・選択肢に出す表現はこちら、内部で扱う turn_limit 値は次の対応表）:
+
+| ラベル | turn_limit | こう案内する |
+|---|---|---|
+| おまかせ（5ターン先まで） | 5 | 通常の対戦想定。ほとんどの構築・選出で十分な精度 |
+| じっくり読む（10ターン先まで） | 10 | 積み技や全抜き展開、長期戦の見極めに。計算は数倍〜10 倍ほど時間がかかります |
+| サクッと（3ターン先まで） | 3 | パーティを調整しながら大まかな選出傾向だけ早く確認したいとき |
+
+ユーザーが「Other」で任意の正整数を入力した場合はそれを `<N>` に埋め込む。負値・0 は弾く。「ターン」を「先読み」「深さ」と言い換えても OK だが、`turn_limit` / `DP` などの内部用語はユーザー向け文面に出さないこと。
+
+**model 別のエンコード**:
+
+- `switching_game` 選択時 → `"switching_game:<N>"`
+- `screened_switching_game` 選択時 → `"screened_switching_game:<trials>:<seed>:<keep_top>:<N>"` (4 番目のフィールドとして付与)
 
 ### 実行
 
@@ -160,10 +215,13 @@ cat <<'JSON' | $PKDX select
   ],
   "opponent": [...],
   "format": "single",
-  "payoff_model": "best1v1"
+  "stat_system": "champions",
+  "team_payoff_model": "switching_game:<N>"
 }
 JSON
 ```
+
+`<N>` は直前の AskUserQuestion で得た値を埋める (おまかせ=5 / じっくり読む=10 / サクッと=3、Other 入力時はその正整数)。`screened_switching_game` を選んだ場合は `"screened_switching_game:1000:42:0.3:<N>"` のように 4 番目のフィールドとして同じ値を付ける。
 
 出力:
 ```json
@@ -254,13 +312,43 @@ JSON
 
 ## Phase 2d: `pkdx nash graph` — DOT 可視化
 
-同じ入力 (matrix / characters) で Graphviz DOT を出力。
+3 種類の入力を受け付ける:
+
+1. **matrix 形式**: 既知の利得行列を直接渡す
+2. **characters 形式**: monocycle (p, v) リストから自動生成
+3. **team + opponent 形式**: `pkdx select` と同じ Combatant JSON。`box/teams/*.meta.json` の `members` をそのまま流せる
 
 ```bash
+# matrix 形式
 cat <<'JSON' | $PKDX nash graph --threshold 0.5
 {"matrix": [[0, 1, -1], [-1, 0, 1], [1, -1, 0]], "labels": ["R", "P", "S"]}
 JSON
+
+# team + opponent 形式 (.meta.json 直接利用)
+jq -n \
+  --slurpfile team box/teams/<自>.meta.json \
+  --slurpfile opp  box/teams/<相手>.meta.json \
+  '{team: $team[0].members, opponent: $opp[0].members}' \
+  | $PKDX nash graph --threshold 0.2 > matchup.dot
+dot -Tpng matchup.dot -o matchup.png
 ```
+
+### team + opponent 形式の詳細
+
+- 入力フィールド: `team` / `opponent` (必須、Combatant 配列)、`stat_system` (任意、既定 `"champions"`)、`turn_limit` (任意、既定 `1`)
+- 行列サイズ: `(n + m) × (n + m)` の零和拡張。上半 `[0..n)` が自チーム、下半 `[n..n+m)` が相手チーム。同陣営ブロックは可視化用ゼロ埋め
+- ノード ID: `team_<i>` / `opp_<j>` の安定 ID + `label="..."` 属性。両陣営に同名ポケモンが居ても DOT で衝突しない
+- `labels` フィールドは指定不可（メンバー名から自動生成）。明示するとエラー
+- `matrix` / `characters` との同時指定もエラー
+
+#### turn_limit の使い分け
+
+| `turn_limit` | 評価方式 | コスト |
+|---|---|---|
+| `1` (既定) | 攻撃技の平均削り率差 (fast path) | 36セルで <1秒 |
+| `>=2` | `switching_game_winrate([a],[b],N)` 1v1 DP | turn_limit に応じて秒〜数十秒 |
+
+`turn_limit` を上げると積み技や交代評価が反映されるが、6×6=36 セルで全1v1 DP を解くため 5以上は本物の 6体構築では数十秒以上かかる。先に `1` で傾向を見てから必要なら上げる。
 
 `threshold` で |A[i,j]| がその値以下のエッジを削除。大きな行列の可視化で有効。
 
@@ -277,6 +365,6 @@ JSON
 
 ## 計算条件の注意
 
-- **stat_system**: `pkdx select` は Standard (EV252/IV31) 既定。Champions SP を使いたい場合は damage 計算前にステータスを `--atk-stat` 等で override する必要がある (現バージョンでは未サポート)。
+- **stat_system**: `pkdx select` は Champions SP 既定 (`"stat_system": "champions"`)。トップレベル JSON の `"stat_system"` フィールドで `"champions"` (既定) / `"standard"` を切り替え可能。旧バージョン (SV 等) のデータを使う場合は `"stat_system": "standard"` を明示する。
 - **天候・フィールド・ランク**: 現バージョンは 0 固定。動的状態を含む選出最適化は将来対応。
 - **tera_type**: `combatant.tera` フィールドで指定可能。攻撃側 STAB のみに作用し、防御側タイプ書換は未実装。

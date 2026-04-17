@@ -41,7 +41,7 @@ flowchart LR
   TB -.cache.-> Cache[box/cache/*.json]
   Breed -.cache.-> Cache
 
-  SU --> Upstream[(upstream: ushironoko/pkdx)]
+  SU --> Upstream[(upstream: pkdxtools/pkdx)]
   Upstream --> SU
 ```
 
@@ -154,6 +154,7 @@ stateDiagram-v2
   B7: Phase 7 完成サマリー & calc 連携
   note right of B7
     --atk-stat / --def-stat / --def-hp で calc に連携
+    (実数値は rank 前の値として扱われ、rank/特性/天候は別途掛かる)
   end note
 
   B7 --> B8
@@ -193,10 +194,10 @@ stateDiagram-v2
 
   SEL: Phase 2b pkdx select
   note right of SEL
-    stdin:  team + opponent + format + payoff_model
-      team_payoff_model のいずれか
-    payoff_model ∈ {best1v1, nash_responses, monte_carlo:T:S}
-    team_payoff_model ∈ {pairwise:m, switching_game:N}
+    stdin:  team + opponent + format + team_payoff_model
+    team_payoff_model ∈ {switching_game,
+      screened_switching_game:T:S:Q}
+    turn_limit 既定: MC=5, DP=5 (switching_game:<N> で上書き可)
   end note
   SEL --> [*]
 
@@ -291,23 +292,21 @@ flowchart TD
   Parse --> Parsed{"team + opponent + format + model"}
 
   Parsed --> Disp{team_model}
-  Disp -->|Pairwise best1v1| PW_B[best1v1_winrate]
-  Disp -->|Pairwise nash_responses| PW_N[nash_responses_winrate]
-  Disp -->|Pairwise monte_carlo| MC[monte_carlo_winrate]
-  Disp -->|SwitchingGame N| SG[switching_game_winrate]
-
-  PW_B --> CP[cross_payoff 6x6]
-  PW_N --> CP
-  MC --> CP
-
-  CP --> TP[team_payoff_matrix_with_team_model]
+  Disp -->|SwitchingGame| SG[switching_game_winrate]
+  Disp -->|ScreenedSwitchingGame T:S:Q| SCR[team_payoff_matrix_screened]
 
   SG --> TPS[team_payoff_matrix_switching]
 
-  TP --> Outer[outer Nash LP]
-  TPS --> Outer
+  SCR --> PhaseA["Phase A: team_monte_carlo_value × C(6,3)² cells"]
+  PhaseA --> PhaseB["Phase B: mean-based row/col pruning (keep_top quantile)"]
+  PhaseB --> PhaseC["Phase C: switching_game_winrate × retained sub-matrix"]
+  PhaseC --> Sub[retained sub-matrix + retained indices]
 
-  Outer --> Out[JSON: value / row_strategy / col_strategy / selections / exploitability]
+  TPS --> Outer[outer Nash LP]
+  Sub --> Outer
+
+  Outer --> Build[build_select_result]
+  Build --> Out[JSON: value / row_strategy / col_strategy / (retained) selections / exploitability]
 ```
 
 ## 7. SwitchingGame 内部ゲーム木 (再帰的ステートマシン)
@@ -323,7 +322,7 @@ stateDiagram-v2
   Check: terminal_value 判定
   Check --> Terminal_Mine: my 全滅 → -1.0
   Check --> Terminal_Opp: opp 全滅 → +1.0
-  Check --> Terminal_Limit: turn ≥ turn_limit → hp_ratio
+  Check --> Terminal_Limit: turn ≥ DP_TURN_LIMIT(5) → hp_ratio
   Check --> CacheLookup: それ以外
 
   CacheLookup --> Hit: cache hit (ValueStats.hits++)
